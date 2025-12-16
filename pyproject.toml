@@ -34,7 +34,6 @@ dev = [
 
 [project.scripts]
 analyze-experiment = "analysis_pipeline.cli.analyze:main"
-batch-analyze = "analysis_pipeline.cli.batch_runner:main"
 
 [build-system]
 requires = ["setuptools>=65.0", "wheel"]

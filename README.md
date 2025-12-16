@@ -7,6 +7,7 @@ A gradient-based analysis pipeline for comparing tiling methods in image predict
 - **Multi-Method Comparison**: Compare 2-5 different prediction methods
 - **KL Divergence Analysis**: Quantify gradient consistency across tile boundaries
 - **Gradient Visualization**: Compare edge vs. middle tile gradients
+- **Prediction Comparison Plots**: Visual comparison of predictions vs ground truth with difference maps
 - **Flexible Configuration**: Support for 2D and 3D data with per-method tile sizes
 
 ## Installation
@@ -111,7 +112,26 @@ run_gradient_analysis_multi(
 )
 ```
 
+## Visualization
+
+For visual comparison of predictions vs ground truth:
+
+```python
+from analysis_pipeline import plot_prediction_comparison
+
+plot_prediction_comparison(
+    prediction_paths=["pred1.tiff", "pred2.tiff", "pred3.tiff"],
+    target_dir="/path/to/dataset/data",
+    target_channel_paths=["channel_1/channel_1.tiff", "channel_2/channel_2.tiff"],
+    method_names=["Method1", "Method2", "Method3"],
+    save_path="./comparison.png"
+)
+```
+
+See [VISUALIZATION.md](VISUALIZATION.md) for detailed usage.
+
 ## Documentation
 
 - **[EXAMPLES.md](EXAMPLES.md)**: Comprehensive usage examples
 - **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)**: Command syntax cheat sheet
+- **[VISUALIZATION.md](VISUALIZATION.md)**: Prediction comparison visualization guide

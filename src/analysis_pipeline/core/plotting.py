@@ -1,14 +1,18 @@
 """Plotting utilities for gradient analysis and visualization."""
 
-from typing import List, Optional
+from typing import List, Optional, Union, Tuple
 from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from matplotlib.patches import Rectangle
 import seaborn as sns
 from scipy.stats import norm
+import tifffile as tiff
 
 from .metrics import compute_kl_matrix, normalize_histogram
+from ..utils.file_utils import load_prediction
 
 
 def plot_multiple_hist(
@@ -243,3 +247,237 @@ def save_figure(fig: plt.Figure, save_path: Path, dpi: int = 300) -> None:
     fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"✅ Saved: {save_path.name}")
+
+
+def plot_prediction_comparison(
+    prediction_paths: List[Union[str, Path]],
+    target_dir: Union[str, Path],
+    target_channel_paths: List[str],
+    method_names: List[str],
+    frame_idx: int = 0,
+    save_path: Optional[Union[str, Path]] = None,
+    crop_factor: float = 4.0,
+    vmin_percentile: float = 1.0,
+    vmax_percentile: float = 99.0,
+    figsize: Tuple[int, int] = (20, 12),
+    dpi: int = 300,
+) -> plt.Figure:
+    """
+    Create a comprehensive comparison plot of predictions vs ground truth.
+
+    This function creates a grid layout showing:
+    - Full ground truth images for each channel
+    - Full input image (concatenated channels)
+    - Cropped/zoomed regions with yellow rectangle indicators
+    - Predictions from multiple methods for each channel
+    - Difference maps between predictions
+
+    Args:
+        prediction_paths: List of paths to prediction files (.tiff, .pkl, .dill)
+        target_dir: Base directory containing target channel subdirectories
+        target_channel_paths: List of relative paths to channel files
+            (e.g., ["channel_1/channel_1.tiff", "channel_2/channel_2.tiff"])
+        method_names: Names of prediction methods (must match prediction_paths length)
+        frame_idx: Frame index to visualize (for multi-frame data)
+        save_path: Optional path to save the figure
+        crop_factor: Factor for center crop (1/crop_factor of image size)
+        vmin_percentile: Lower percentile for normalization
+        vmax_percentile: Upper percentile for normalization
+        figsize: Figure size (width, height)
+        dpi: DPI for saved figure
+
+    Returns:
+        Matplotlib figure object
+
+    Example:
+        >>> plot_prediction_comparison(
+        ...     prediction_paths=["pred1.tiff", "pred2.tiff", "pred3.tiff"],
+        ...     target_dir="/group/jug/aman/Datasets/PAVIA_ATN/data",
+        ...     target_channel_paths=["channel_1/channel_1.tiff", "channel_2/channel_2.tiff"],
+        ...     method_names=["OuterTiling", "InnerTiling", "SWT"],
+        ...     frame_idx=0,
+        ...     save_path="./comparison.png"
+        ... )
+    """
+    target_dir = Path(target_dir)
+    n_methods = len(prediction_paths)
+    n_channels = len(target_channel_paths)
+
+    if len(method_names) != n_methods:
+        raise ValueError(
+            f"Number of method names ({len(method_names)}) must match "
+            f"number of predictions ({n_methods})"
+        )
+
+    # Load ground truth targets
+    targets = []
+    for channel_path in target_channel_paths:
+        full_path = target_dir / channel_path
+        if not full_path.exists():
+            raise FileNotFoundError(f"Target file not found: {full_path}")
+        target = tiff.imread(full_path)
+        targets.append(target)
+
+    # Load predictions
+    predictions = []
+    for pred_path in prediction_paths:
+        pred = load_prediction(pred_path)
+        predictions.append(pred)
+
+    # Extract frame if needed
+    targets_frame = [t[frame_idx] if t.ndim > 2 else t for t in targets]
+    predictions_frame = [
+        p[frame_idx] if p.ndim > 2 else p for p in predictions
+    ]
+
+    # Handle channel dimension - assume last dimension is channel for predictions
+    # Targets are typically (H, W) or (C, H, W)
+    targets_frame_channels = []
+    for t in targets_frame:
+        if t.ndim == 2:
+            targets_frame_channels.append([t])
+        elif t.ndim == 3 and t.shape[0] <= 3:  # (C, H, W)
+            targets_frame_channels.append([t[i] for i in range(t.shape[0])])
+        else:
+            targets_frame_channels.append([t])
+
+    # Flatten targets to individual channels
+    all_gt_channels = []
+    for t_channels in targets_frame_channels:
+        all_gt_channels.extend(t_channels)
+
+    # Create input image (concatenation of all GT channels)
+    input_img = np.concatenate([c for c in all_gt_channels], axis=-1) if len(all_gt_channels) > 1 else all_gt_channels[0]
+
+    # Compute normalization from GT
+    vmin = np.percentile(all_gt_channels[0], vmin_percentile)
+    vmax = np.percentile(all_gt_channels[0], vmax_percentile)
+
+    # Compute crop region (center crop)
+    h, w = all_gt_channels[0].shape
+    crop_h, crop_w = int(h / crop_factor), int(w / crop_factor)
+    start_h, start_w = (h - crop_h) // 2, (w - crop_w) // 2
+
+    # Create figure with GridSpec
+    fig = plt.figure(figsize=figsize)
+    gs = gridspec.GridSpec(
+        nrows=n_channels + 1,
+        ncols=n_methods + 3,
+        figure=fig,
+        hspace=0.3,
+        wspace=0.3
+    )
+
+    # Row 0: Full images (GT channels + Input)
+    for ch_idx, gt_channel in enumerate(all_gt_channels[:n_channels]):
+        ax = fig.add_subplot(gs[0, ch_idx])
+        ax.imshow(gt_channel, cmap="gray", vmin=vmin, vmax=vmax)
+        ax.set_title(f"GT Channel {ch_idx + 1}", fontsize=10, fontweight="bold")
+        ax.axis("off")
+        # Add crop indicator
+        rect = Rectangle(
+            (start_w, start_h), crop_w, crop_h,
+            linewidth=2, edgecolor="yellow", facecolor="none"
+        )
+        ax.add_patch(rect)
+
+    # Input image
+    ax_input = fig.add_subplot(gs[0, n_channels])
+    if input_img.ndim == 2:
+        ax_input.imshow(input_img, cmap="gray", vmin=vmin, vmax=vmax)
+    else:
+        # For multi-channel, show first channel
+        ax_input.imshow(input_img if input_img.ndim == 2 else input_img[..., 0], cmap="gray", vmin=vmin, vmax=vmax)
+    ax_input.set_title("Input (GT)", fontsize=10, fontweight="bold")
+    ax_input.axis("off")
+    rect = Rectangle(
+        (start_w, start_h), crop_w, crop_h,
+        linewidth=2, edgecolor="yellow", facecolor="none"
+    )
+    ax_input.add_patch(rect)
+
+    # Row 0: Cropped GT
+    for ch_idx, gt_channel in enumerate(all_gt_channels[:n_channels]):
+        ax = fig.add_subplot(gs[0, n_channels + 1 + ch_idx])
+        cropped = gt_channel[start_h:start_h + crop_h, start_w:start_w + crop_w]
+        ax.imshow(cropped, cmap="gray", vmin=vmin, vmax=vmax)
+        ax.set_title(f"GT Ch{ch_idx + 1} (Crop)", fontsize=9)
+        ax.axis("off")
+
+    # Rows 1+: Predictions for each channel
+    for ch_idx in range(n_channels):
+        for method_idx, (pred, method_name) in enumerate(zip(predictions_frame, method_names)):
+            # Extract channel from prediction
+            if pred.ndim == 2:
+                pred_channel = pred
+            elif pred.ndim == 3:
+                # Assume last dimension is channel
+                if pred.shape[-1] <= n_channels:
+                    pred_channel = pred[..., ch_idx] if ch_idx < pred.shape[-1] else pred[..., 0]
+                else:
+                    # Assume first dimension is channel
+                    pred_channel = pred[ch_idx] if ch_idx < pred.shape[0] else pred[0]
+            else:
+                pred_channel = pred
+
+            # Full prediction
+            ax = fig.add_subplot(gs[ch_idx + 1, method_idx])
+            ax.imshow(pred_channel, cmap="gray", vmin=vmin, vmax=vmax)
+            ax.set_title(f"{method_name}\nCh{ch_idx + 1}", fontsize=9)
+            ax.axis("off")
+            rect = Rectangle(
+                (start_w, start_h), crop_w, crop_h,
+                linewidth=2, edgecolor="yellow", facecolor="none"
+            )
+            ax.add_patch(rect)
+
+            # Cropped prediction
+            ax = fig.add_subplot(gs[ch_idx + 1, n_methods + method_idx])
+            cropped_pred = pred_channel[start_h:start_h + crop_h, start_w:start_w + crop_w]
+            ax.imshow(cropped_pred, cmap="gray", vmin=vmin, vmax=vmax)
+            ax.set_title(f"{method_name} (Crop)", fontsize=9)
+            ax.axis("off")
+
+    # Add difference maps between first and other predictions (last column)
+    if n_methods > 1:
+        for ch_idx in range(n_channels):
+            for method_idx in range(1, n_methods):
+                pred_ref = predictions_frame[0]
+                pred_comp = predictions_frame[method_idx]
+
+                # Extract channels
+                if pred_ref.ndim == 2:
+                    ref_channel = pred_ref
+                elif pred_ref.ndim == 3:
+                    ref_channel = pred_ref[..., ch_idx] if ch_idx < pred_ref.shape[-1] else pred_ref[..., 0]
+                else:
+                    ref_channel = pred_ref
+
+                if pred_comp.ndim == 2:
+                    comp_channel = pred_comp
+                elif pred_comp.ndim == 3:
+                    comp_channel = pred_comp[..., ch_idx] if ch_idx < pred_comp.shape[-1] else pred_comp[..., 0]
+                else:
+                    comp_channel = pred_comp
+
+                diff = comp_channel - ref_channel
+                diff_cropped = diff[start_h:start_h + crop_h, start_w:start_w + crop_w]
+
+                ax = fig.add_subplot(gs[ch_idx + 1, -1])
+                im = ax.imshow(diff_cropped, cmap="seismic", vmin=-np.abs(diff_cropped).max(), vmax=np.abs(diff_cropped).max())
+                ax.set_title(f"Diff: {method_names[method_idx]}\n- {method_names[0]}", fontsize=8)
+                ax.axis("off")
+                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    fig.suptitle(
+        f"Prediction Comparison (Frame {frame_idx})",
+        fontsize=14,
+        fontweight="bold",
+        y=0.98
+    )
+
+    if save_path:
+        save_path = Path(save_path)
+        save_figure(fig, save_path, dpi=dpi)
+
+    return fig
